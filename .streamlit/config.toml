@@ -1,0 +1,19 @@
+[theme]
+# Force a light base regardless of the visitor's OS/browser colour-scheme
+# preference. Without this, Streamlit's native widgets (dropdown popovers,
+# checkboxes, toggles, date/time pickers, sliders...) follow "auto" and can
+# render with a dark base under system dark-mode, which fights the app's
+# light "ink & brass" CSS and makes some controls unreadable on hover.
+base = "light"
+primaryColor = "#A9791F"
+backgroundColor = "#FBFAF6"
+secondaryBackgroundColor = "#F3EFE5"
+textColor = "#1B2440"
+font = "sans serif"
+
+[server]
+headless = true
+enableStaticServing = true
+
+[browser]
+gatherUsageStats = false

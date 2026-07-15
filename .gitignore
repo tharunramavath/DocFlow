@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.*
+
+# Streamlit cache
+.streamlit/secrets.toml
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/*
+!logs/.gitkeep
+
+# Generated certificates
+generated_certificates/*
+!generated_certificates/.gitkeep
+
+# Uploaded Excel files
+assets/uploads/*
+!assets/uploads/.gitkeep
+
+# User uploaded documents
+assets/media/documents/*
+!assets/media/documents/.gitkeep
+
+assets/media/images/*
+!assets/media/images/.gitkeep
+
+assets/media/videos/*
+!assets/media/videos/.gitkeep
+
+assets/media/audio/*
+!assets/media/audio/.gitkeep
+
+assets/media/spreadsheets/*
+!assets/media/spreadsheets/.gitkeep
+
+assets/media/other/*
+!assets/media/other/.gitkeep
+
+# Configuration
+config/config.json
+!config/.gitkeep
+
+# Temporary files
+*.log
+*.tmp
+*.bak
