@@ -19,10 +19,25 @@ from services.config_manager import load_config, save_config
 from services.excel_reader import Participant
 
 
+def _apply_secrets(config: Dict) -> Dict:
+    """Override config values with Streamlit Secrets when deployed on Streamlit
+    Cloud.  Runs only once during session init; local development is unaffected.
+    """
+    try:
+        secrets = st.secrets
+    except Exception:
+        return config
+
+    api_key = secrets.get("BREVO_API_KEY") or secrets.get("brevo_api_key")
+    if api_key:
+        config.setdefault("email_settings", {})["brevo_api_key"] = api_key
+    return config
+
+
 def init_session() -> None:
     """Initialise session state on first load of a session."""
     if "config" not in st.session_state:
-        st.session_state.config = load_config()
+        st.session_state.config = _apply_secrets(load_config())
     if "page" not in st.session_state:
         st.session_state.page = "Dashboard"
     if "participants" not in st.session_state:

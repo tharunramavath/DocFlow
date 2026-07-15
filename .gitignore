@@ -12,7 +12,7 @@ env/
 .env
 .env.*
 
-# Streamlit cache
+# Streamlit secrets (local and Cloud)
 .streamlit/secrets.toml
 
 # IDE
@@ -62,3 +62,6 @@ config/config.json
 *.log
 *.tmp
 *.bak
+
+# Windows reserved device name (appears as untracked file in some shells)
+nul
