@@ -80,6 +80,7 @@ def build_participants(
     name_column: str,
     email_column: str,
     extra_fields: Dict[str, str] | None = None,
+    certificate_id_column: str | None = None,
 ) -> LoadResult:
     """
     Turn a dataframe into validated Participant records.
@@ -90,6 +91,8 @@ def build_participants(
         email_column: header holding the participant email.
         extra_fields: mapping of ``{{Placeholder}} -> column header`` for
             any additional dynamic fields to expose to the email template.
+        certificate_id_column: optional column header containing certificate IDs.
+            If provided, adds {{CertificateID}} to participant extras.
 
     Rules (preserved from the original project):
         - Fully empty rows are ignored.
@@ -129,6 +132,11 @@ def build_participants(
             if column and column in df.columns:
                 val = row.get(column)
                 extras[placeholder] = "" if pd.isna(val) else str(val).strip()
+
+        # Add certificate ID if column specified
+        if certificate_id_column and certificate_id_column in df.columns:
+            val = row.get(certificate_id_column)
+            extras["{{CertificateID}}"] = "" if pd.isna(val) else str(val).strip()
 
         participants.append(Participant(name=name, email=email, extras=extras))
 

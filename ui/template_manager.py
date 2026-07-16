@@ -164,6 +164,24 @@ def _participants_tab() -> None:
             "Email column", columns, index=columns.index(email_guess)
         )
 
+    # Certificate ID column (optional)
+    st.caption("Optional: Certificate ID column")
+    c3, c4 = st.columns([3, 1])
+    with c3:
+        cert_id_options = [""] + columns
+        cert_id_default = (
+            columns.index(mapping["certificate_id_column"])
+            if mapping.get("certificate_id_column") in columns
+            else 0
+        )
+        mapping["certificate_id_column"] = st.selectbox(
+            "Certificate ID column",
+            cert_id_options,
+            index=cert_id_default,
+            help="Optional: select the column containing certificate IDs. "
+            "This adds {{CertificateID}} as a placeholder for certificates and emails.",
+        )
+
     if st.button("Load participants", type="primary", key="load_participants"):
         try:
             result = excel_reader.build_participants(
@@ -171,6 +189,7 @@ def _participants_tab() -> None:
                 mapping["name_column"],
                 mapping["email_column"],
                 mapping.get("extra_fields", {}),
+                mapping.get("certificate_id_column") or None,
             )
             set_participants(result.participants, st.session_state.participants_source)
             persist_config()
@@ -208,6 +227,7 @@ def _available_placeholders() -> List[str]:
         "{{Date}}",
         "{{Organization}}",
         "{{CertificateName}}",
+        "{{CertificateID}}",
     ]
     df = st.session_state.get("excel_df")
     if df is not None:
@@ -217,6 +237,10 @@ def _available_placeholders() -> List[str]:
     for k in extra:
         if k not in builtins:
             builtins.append(k)
+    # Add CertificateID if certificate_id_column is configured
+    cert_id_col = cfg().get("column_mapping", {}).get("certificate_id_column", "")
+    if cert_id_col and "{{CertificateID}}" not in builtins:
+        builtins.append("{{CertificateID}}")
     return builtins
 
 
@@ -245,6 +269,7 @@ def _build_sample_context() -> Dict[str, str]:
         "{{CertificateName}}": campaign.get(
             "certificate_name", "Certificate of Participation"
         ),
+        "{{CertificateID}}": "CERT-2026-001",
     }
 
 
@@ -560,6 +585,30 @@ def _certificate_tab() -> None:
                     "width": None,
                     "height": None,
                     "opacity": 1.0,
+                }
+            )
+            cfg()["certificate_elements"] = elements
+            st.rerun()
+        if st.button(
+            "+ Certificate ID", key="add_cert_id_btn", use_container_width=True
+        ):
+            elements.append(
+                {
+                    "id": "el_" + uuid.uuid4().hex[:8],
+                    "type": "text",
+                    "label": "Certificate ID",
+                    "content_source": "{{CertificateID}}",
+                    "x": w // 2,
+                    "y": h // 2 + 150,
+                    "font_size": 60,
+                    "min_font_size": 30,
+                    "font_size_step": 2,
+                    "max_text_width": min(1000, w),
+                    "font_color": "#141414",
+                    "font_family": "DejaVuSerif",
+                    "bold": False,
+                    "italic": False,
+                    "alignment": "center",
                 }
             )
             cfg()["certificate_elements"] = elements

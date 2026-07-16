@@ -136,6 +136,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "column_mapping": {
         "name_column": "Name",
         "email_column": "Email",
+        "certificate_id_column": "",
         "extra_fields": {},  # { "{{Placeholder}}": "Excel Column" }
     },
     # 5. Certificate template (path, relative to project or absolute) -----
