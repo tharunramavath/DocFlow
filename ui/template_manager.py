@@ -182,6 +182,19 @@ def _participants_tab() -> None:
             "This adds {{CertificateID}} as a placeholder for certificates and emails.",
         )
 
+    # Auto-update any existing Certificate ID elements to use canonical placeholder
+    if mapping.get("certificate_id_column"):
+        for el in cfg().get("certificate_elements", []):
+            src = el.get("content_source", "")
+            if (
+                src
+                and "certificate" in src.lower()
+                and "id" in src.lower().replace(" ", "")
+            ):
+                if el.get("content_source") != "{{CertificateID}}":
+                    el["content_source"] = "{{CertificateID}}"
+                    el["label"] = "Certificate ID"
+
     if st.button("Load participants", type="primary", key="load_participants"):
         try:
             result = excel_reader.build_participants(
@@ -232,12 +245,17 @@ def _available_placeholders() -> List[str]:
     df = st.session_state.get("excel_df")
     if df is not None:
         cols = [f"{{{{{c.strip()}}}}}" for c in df.columns if c.strip()]
-        builtins.extend(c for c in cols if c not in builtins)
+        # Skip certificate ID variations - use canonical {{CertificateID}} only
+        for c in cols:
+            if c not in builtins and not (
+                "certificate" in c.lower() and "id" in c.lower().replace(" ", "")
+            ):
+                builtins.append(c)
     extra = cfg().get("column_mapping", {}).get("extra_fields", {})
     for k in extra:
         if k not in builtins:
             builtins.append(k)
-    # Add CertificateID if certificate_id_column is configured
+    # Ensure CertificateID is always available if certificate_id_column is configured
     cert_id_col = cfg().get("column_mapping", {}).get("certificate_id_column", "")
     if cert_id_col and "{{CertificateID}}" not in builtins:
         builtins.append("{{CertificateID}}")
@@ -342,6 +360,10 @@ def _element_editor(elements: List[Dict], w: int, h: int) -> None:
 
 def _text_element_fields(el: Dict, el_id: str, w: int, h: int) -> None:
     """Render editor fields for a text element."""
+    # Force Certificate ID elements to use canonical placeholder
+    if el.get("label") == "Certificate ID":
+        el["content_source"] = "{{CertificateID}}"
+
     placeholders = _available_placeholders()
     current_src = el.get("content_source", "")
     is_custom = current_src and current_src not in placeholders
