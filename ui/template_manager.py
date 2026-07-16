@@ -520,34 +520,44 @@ def _certificate_tab() -> None:
     elements = cfg()["certificate_elements"]
 
     # Add element buttons
-    col_add, col_save, _ = st.columns([1, 1, 3])
+    col_add, col_save, _ = st.columns([2, 1, 2])
     with col_add:
-        add_type = st.selectbox(
-            "Add new",
-            ["", "Text element", "Image element"],
-            key="add_element_type",
-            label_visibility="collapsed",
-        )
-        if add_type == "Text element":
-            new_el = {
-                "id": "el_" + uuid.uuid4().hex[:8],
-                "type": "text",
-                "label": "New Text",
-                "content_source": "{{Name}}",
-                "x": w // 2,
-                "y": h // 2,
-                "font_size": 90,
-                "min_font_size": 40,
-                "font_size_step": 2,
-                "max_text_width": min(1350, w),
-                "font_color": "#141414",
-                "font_family": "DejaVuSerif",
-                "bold": False,
-                "italic": False,
-                "alignment": "center",
-            }
-            elements.append(new_el)
-            st.session_state.add_element_type = ""
+        st.markdown("**Add element**")
+        if st.button("+ Text", key="add_text_btn", use_container_width=True):
+            elements.append(
+                {
+                    "id": "el_" + uuid.uuid4().hex[:8],
+                    "type": "text",
+                    "label": "New Text",
+                    "content_source": "{{Name}}",
+                    "x": w // 2,
+                    "y": h // 2,
+                    "font_size": 90,
+                    "min_font_size": 40,
+                    "font_size_step": 2,
+                    "max_text_width": min(1350, w),
+                    "font_color": "#141414",
+                    "font_family": "DejaVuSerif",
+                    "bold": False,
+                    "italic": False,
+                    "alignment": "center",
+                }
+            )
+            st.rerun()
+        if st.button("+ Image", key="add_image_btn", use_container_width=True):
+            elements.append(
+                {
+                    "id": "el_" + uuid.uuid4().hex[:8],
+                    "type": "image",
+                    "label": "New Image",
+                    "content_source": "",
+                    "x": 0,
+                    "y": 0,
+                    "width": None,
+                    "height": None,
+                    "opacity": 1.0,
+                }
+            )
             st.rerun()
         elif add_type == "Image element":
             new_el = {
