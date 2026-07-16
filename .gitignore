@@ -58,6 +58,8 @@ assets/media/other/*
 config/config.json
 !config/.gitkeep
 
+presets/*
+
 # Temporary files
 *.log
 *.tmp
