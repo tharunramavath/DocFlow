@@ -59,6 +59,7 @@ config/config.json
 !config/.gitkeep
 
 presets/*
+templates/*
 
 # Temporary files
 *.log
