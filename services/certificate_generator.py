@@ -1,14 +1,16 @@
 """
 services/certificate_generator.py
 =================================
-Generates a personalized certificate for a participant by drawing their name
-onto a template image and exporting the result as a high-quality PDF.
+Generates a personalized certificate for a participant by drawing multiple
+dynamic elements (text and images) onto a template image and exporting the
+result as a high-quality PDF.
 
 Refactored from the original project's certificate_generator.py. The
 name-fitting / auto-shrink logic is preserved exactly; what's new is that
-placement and styling now come from a plain settings dict (so the UI can
+placement and styling now come from a list of element dicts (so the UI can
 drive them live) and the renderer additionally supports font-family
-selection, bold/italic variants, text alignment and hex colours.
+selection, bold/italic variants, text alignment, hex colours, and image
+elements (logos, signatures, etc.).
 
 The same rendering routine powers both the on-screen live preview
 (``render_preview_image``) and the final PDF export
@@ -19,13 +21,15 @@ sent.
 from __future__ import annotations
 
 import logging
+from datetime import date
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
 from core.utils import hex_to_rgb, sanitize_filename
-from services.config_manager import FONTS_DIR, GENERATED_DIR
+from services.config_manager import BASE_DIR, FONTS_DIR, GENERATED_DIR, resolve_path
+from services.placeholder_service import replace_placeholders
 
 logger = logging.getLogger(__name__)
 
@@ -35,14 +39,30 @@ class CertificateGenerationError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Font discovery & resolution
+# Context builder
+# ---------------------------------------------------------------------------
+def build_certificate_context(participant, config: Dict[str, Any]) -> Dict[str, str]:
+    """Assemble the placeholder-substitution context for one participant."""
+    context = {
+        "{{Name}}": participant.name,
+        "{{Email}}": participant.email,
+        "{{Date}}": date.today().strftime("%B %d, %Y"),
+        "{{Organization}}": config.get("email_settings", {}).get(
+            "organization_name", ""
+        ),
+        "{{CertificateName}}": config.get("campaign_settings", {}).get(
+            "certificate_name", "Certificate of Participation"
+        ),
+    }
+    if participant.extras:
+        context.update(participant.extras)
+    return context
+
+
+# ---------------------------------------------------------------------------
+# Font discovery & resolution (unchanged from original)
 # ---------------------------------------------------------------------------
 def list_font_families() -> List[str]:
-    """
-    Return the sorted list of base font family names available in the fonts
-    folder. Variant suffixes (-Bold, -Italic, -Oblique, -BoldItalic ...) are
-    stripped so the UI shows one entry per family.
-    """
     families = set()
     for ttf in FONTS_DIR.glob("*.ttf"):
         stem = ttf.stem
@@ -55,10 +75,8 @@ def list_font_families() -> List[str]:
 
 
 def _font_candidates(family: str, bold: bool, italic: bool) -> List[str]:
-    """Ordered list of candidate filenames, most-specific variant first."""
     italic_names = ("Italic", "Oblique")
     candidates: List[str] = []
-
     if bold and italic:
         candidates += [f"{family}-Bold{i}" for i in italic_names]
         candidates += [f"{family}-{i}" for i in italic_names]
@@ -67,18 +85,15 @@ def _font_candidates(family: str, bold: bool, italic: bool) -> List[str]:
         candidates.append(f"{family}-Bold")
     elif italic:
         candidates += [f"{family}-{i}" for i in italic_names]
-
-    candidates.append(family)  # always fall back to the regular face
+    candidates.append(family)
     return candidates
 
 
 def resolve_font_path(family: str, bold: bool, italic: bool) -> Path | None:
-    """Find the best available .ttf for the requested style, or None."""
     for name in _font_candidates(family, bold, italic):
         candidate = FONTS_DIR / f"{name}.ttf"
         if candidate.exists():
             return candidate
-    # Last resort: any ttf that starts with the family name.
     matches = sorted(FONTS_DIR.glob(f"{family}*.ttf"))
     return matches[0] if matches else None
 
@@ -91,20 +106,15 @@ def _stem_has(path: Path | None, tokens: Tuple[str, ...]) -> bool:
 
 
 def resolve_style(family: str, bold: bool, italic: bool):
-    """
-    Resolve the requested style to a concrete font file and report whether
-    bold / italic are satisfied by a *true* font face. Whatever isn't
-    satisfied is synthesized at render time (faux bold via stroke, faux
-    italic via shear) so bold and italic always have a visible effect — even
-    for uploaded fonts that ship only a regular face.
-    """
     path = resolve_font_path(family, bold, italic)
     true_bold = bold and _stem_has(path, ("Bold",))
     true_italic = italic and _stem_has(path, ("Italic", "Oblique"))
     return path, true_bold, true_italic
 
 
-def _load_font(family: str, bold: bool, italic: bool, size: int) -> ImageFont.FreeTypeFont:
+def _load_font(
+    family: str, bold: bool, italic: bool, size: int
+) -> ImageFont.FreeTypeFont:
     path = resolve_font_path(family, bold, italic)
     if path is not None:
         try:
@@ -145,12 +155,12 @@ def _fit_text_to_width(
 # ---------------------------------------------------------------------------
 # Core rendering
 # ---------------------------------------------------------------------------
-_ITALIC_SHEAR = 0.24  # ~13.5° lean for synthesized italic
+_ITALIC_SHEAR = 0.24
 
 
-def _shear_italic(tile: Image.Image, shear: float = _ITALIC_SHEAR) -> Tuple[Image.Image, float]:
-    """Slant a transparent text tile to the right (faux italic). Returns the
-    sheared tile and the horizontal shift applied so callers can re-centre."""
+def _shear_italic(
+    tile: Image.Image, shear: float = _ITALIC_SHEAR
+) -> Tuple[Image.Image, float]:
     w, h = tile.size
     xshift = shear * h
     sheared = tile.transform(
@@ -162,28 +172,32 @@ def _shear_italic(tile: Image.Image, shear: float = _ITALIC_SHEAR) -> Tuple[Imag
     return sheared, xshift
 
 
-def _place_name(image: Image.Image, name: str, position: Dict) -> Image.Image:
+def _place_text_element(
+    image: Image.Image, element: Dict, context: Dict[str, str]
+) -> Image.Image:
     """
-    Draw ``name`` onto ``image`` honouring family, bold, italic, colour and
-    alignment. Bold/italic that the chosen font can't provide natively are
-    synthesized (stroke / shear) so the style is always visible. Shared by the
-    live preview and the final PDF export, so what you preview is what you get.
+    Draw a single text element onto ``image``.
+    ``element`` holds position and styling; ``context`` provides placeholder values.
     """
+    text = replace_placeholders(element.get("content_source", ""), context)
+    if not text:
+        return image
+
     draw = ImageDraw.Draw(image)
 
-    family = position.get("font_family", "DejaVuSerif")
-    bold = bool(position.get("bold", False))
-    italic = bool(position.get("italic", False))
-    color = hex_to_rgb(position.get("font_color", "#141414"))
-    alignment = position.get("alignment", "center")
+    family = element.get("font_family", "DejaVuSerif")
+    bold = bool(element.get("bold", False))
+    italic = bool(element.get("italic", False))
+    color = hex_to_rgb(element.get("font_color", "#141414"))
+    alignment = element.get("alignment", "center")
 
     font, used_size = _fit_text_to_width(
         draw=draw,
-        text=name,
-        max_width=int(position.get("max_text_width", 1350)),
-        start_size=int(position.get("font_size", 90)),
-        min_size=int(position.get("min_font_size", 40)),
-        step=int(position.get("font_size_step", 2)),
+        text=text,
+        max_width=int(element.get("max_text_width", 1350)),
+        start_size=int(element.get("font_size", 90)),
+        min_size=int(element.get("min_font_size", 40)),
+        step=int(element.get("font_size_step", 2)),
         family=family,
         bold=bold,
         italic=italic,
@@ -194,15 +208,14 @@ def _place_name(image: Image.Image, name: str, position: Dict) -> Image.Image:
     faux_italic = italic and not true_italic
     stroke = max(1, round(used_size * 0.035)) if faux_bold else 0
 
-    if used_size == int(position.get("min_font_size", 40)):
-        probe = draw.textbbox((0, 0), name, font=font, stroke_width=stroke)
-        if (probe[2] - probe[0]) > int(position.get("max_text_width", 1350)):
+    if used_size == int(element.get("min_font_size", 40)):
+        probe = draw.textbbox((0, 0), text, font=font, stroke_width=stroke)
+        if (probe[2] - probe[0]) > int(element.get("max_text_width", 1350)):
             logger.warning(
-                "Name '%s' still exceeds max width at minimum font size.", name
+                "Text '%s' still exceeds max width at minimum font size.", text
             )
 
-    # Render the name onto its own transparent tile so we can shear it.
-    bbox = draw.textbbox((0, 0), name, font=font, stroke_width=stroke)
+    bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     pad = max(6, used_size // 6)
 
@@ -210,7 +223,7 @@ def _place_name(image: Image.Image, name: str, position: Dict) -> Image.Image:
     tile = Image.new("RGBA", (tw + 2 * pad, th + 2 * pad), (0, 0, 0, 0))
     ImageDraw.Draw(tile).text(
         (pad - bbox[0], pad - bbox[1]),
-        name,
+        text,
         font=font,
         fill=fill,
         stroke_width=stroke,
@@ -221,13 +234,13 @@ def _place_name(image: Image.Image, name: str, position: Dict) -> Image.Image:
     if faux_italic:
         tile, xshift = _shear_italic(tile)
 
-    anchor_x = int(position.get("x", image.width // 2))
-    anchor_y = int(position.get("y", image.height // 2))
+    anchor_x = int(element.get("x", image.width // 2))
+    anchor_y = int(element.get("y", image.height // 2))
     if alignment == "left":
         x = anchor_x
     elif alignment == "right":
         x = anchor_x - tw
-    else:  # center
+    else:
         x = anchor_x - tw / 2
     y = anchor_y - th / 2
 
@@ -237,15 +250,78 @@ def _place_name(image: Image.Image, name: str, position: Dict) -> Image.Image:
     return image
 
 
-def render_certificate_image(
-    name: str,
-    template_path: Path,
-    position: Dict,
+def _place_image_element(image: Image.Image, element: Dict) -> Image.Image:
+    """
+    Paste an image element (logo, signature, etc.) onto the certificate.
+    Resolves the path via ``resolve_path``; optionally resizes to width/height.
+    """
+    source = element.get("content_source", "")
+    if not source:
+        return image
+
+    img_path = resolve_path(source)
+    if not img_path or not img_path.exists():
+        logger.warning(
+            "Image element '%s' not found at '%s'", element.get("label", ""), img_path
+        )
+        return image
+
+    try:
+        overlay = Image.open(img_path).convert("RGBA")
+    except Exception as exc:
+        logger.warning("Failed to open image '%s': %s", img_path, exc)
+        return image
+
+    # Optional resize
+    w = element.get("width")
+    h = element.get("height")
+    if w and h:
+        overlay = overlay.resize((int(w), int(h)), Image.LANCZOS)
+    elif w:
+        ratio = float(w) / overlay.width
+        overlay = overlay.resize((int(w), int(overlay.height * ratio)), Image.LANCZOS)
+    elif h:
+        ratio = float(h) / overlay.height
+        overlay = overlay.resize((int(overlay.width * ratio), int(h)), Image.LANCZOS)
+
+    # Opacity / alpha blending
+    opacity = float(element.get("opacity", 1.0))
+    if opacity < 1.0:
+        r, g, b, a = overlay.split()
+        a = a.point(lambda x: int(x * opacity))
+        overlay = Image.merge("RGBA", (r, g, b, a))
+
+    x = int(element.get("x", 0))
+    y = int(element.get("y", 0))
+    image.paste(overlay, (x, y), overlay)
+    return image
+
+
+def _render_elements(
+    image: Image.Image, elements: List[Dict], context: Dict[str, str]
 ) -> Image.Image:
     """
-    Draw ``name`` onto the template and return the resulting PIL image (RGB).
-    Shared by the live preview and the PDF export.
+    Iterate through all elements in order and render each onto the image.
+    Text elements get placeholder substitution; image elements are pasted directly.
     """
+    for element in elements:
+        etype = element.get("type", "text")
+        if etype == "image":
+            image = _place_image_element(image, element)
+        else:
+            image = _place_text_element(image, element, context)
+    return image
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+def render_certificate_image(
+    template_path: Path,
+    elements: List[Dict],
+    context: Dict[str, str],
+) -> Image.Image:
+    """Draw all elements onto the template and return the resulting PIL image (RGB)."""
     template_path = Path(template_path)
     if not template_path.exists():
         raise CertificateGenerationError(
@@ -255,45 +331,44 @@ def render_certificate_image(
     with Image.open(template_path) as template:
         image = template.convert("RGB")
 
-    return _place_name(image, name, position)
+    return _render_elements(image, elements, context)
 
 
 def generate_certificate(
-    name: str,
+    participant,
     template_path: Path,
-    position: Dict,
+    elements: List[Dict],
+    config: Dict[str, Any],
     output_dir: Path = GENERATED_DIR,
 ) -> Path:
     """
-    Generate a personalized certificate PDF for ``name`` and return its path.
+    Generate a personalized certificate PDF for a participant and return its path.
+    Builds context from participant data, renders all elements, saves as PDF.
     Raises ``CertificateGenerationError`` on failure.
     """
     try:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        image = render_certificate_image(name, template_path, position)
+        context = build_certificate_context(participant, config)
+        image = render_certificate_image(template_path, elements, context)
 
-        output_path = output_dir / f"{sanitize_filename(name)}.pdf"
-        image.save(
-            output_path,
-            "PDF",
-            resolution=float(position.get("dpi", 300)),
-            quality=95,
-        )
+        output_path = output_dir / f"{sanitize_filename(participant.name)}.pdf"
+        dpi = float(config.get("dpi", 300))
+        image.save(output_path, "PDF", resolution=dpi, quality=95)
         return output_path
     except CertificateGenerationError:
         raise
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise CertificateGenerationError(
-            f"Failed to generate certificate for '{name}': {exc}"
+            f"Failed to generate certificate for '{getattr(participant, 'name', '?')}': {exc}"
         ) from exc
 
 
 def render_preview_image(
-    name: str,
     template_path: Path,
-    position: Dict,
+    elements: List[Dict],
+    context: Dict[str, str],
     max_dimension: int = 1000,
 ) -> Image.Image:
     """
@@ -306,18 +381,24 @@ def render_preview_image(
     scale = min(1.0, max_dimension / max(full_w, full_h))
 
     if scale >= 1.0:
-        return render_certificate_image(name, template_path, position)
+        return render_certificate_image(template_path, elements, context)
 
-    scaled = dict(position)
-    for key in ("x", "y", "font_size", "min_font_size", "max_text_width"):
-        if key in scaled:
-            scaled[key] = max(1, int(scaled[key] * scale))
+    # Scale elements
+    scaled_elements = []
+    for el in elements:
+        sel = dict(el)
+        for key in ("x", "y", "font_size", "min_font_size", "max_text_width"):
+            if key in sel:
+                sel[key] = max(1, int(sel[key] * scale))
+        if sel.get("type") == "image":
+            for key in ("width", "height"):
+                if key in sel and sel[key]:
+                    sel[key] = max(1, int(sel[key] * scale))
+        scaled_elements.append(sel)
 
-    # Render onto a downscaled copy of the template using the same routine as
-    # the full-size export, so the preview faithfully reflects the output.
     with Image.open(template_path) as template:
         small = template.convert("RGB").resize(
             (max(1, int(full_w * scale)), max(1, int(full_h * scale)))
         )
 
-    return _place_name(small, name, scaled)
+    return _render_elements(small, scaled_elements, context)

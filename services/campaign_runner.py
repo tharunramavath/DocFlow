@@ -224,7 +224,7 @@ class CampaignRunner:
 
     def _execute(self, participants: List[Participant], config: Dict) -> None:
         template_path = resolve_path(config.get("certificate_template", ""))
-        position = config.get("text_position", {})
+        elements = config.get("certificate_elements", [])
         email_settings = config.get("email_settings", {})
         template = config.get("email_template", {})
         campaign = config.get("campaign_settings", {})
@@ -280,7 +280,7 @@ class CampaignRunner:
             # -- Certificate ------------------------------------------
             try:
                 pdf_path = generate_certificate(
-                    participant.name, template_path, position, output_dir
+                    participant, template_path, elements, config, output_dir
                 )
                 pdf_generated = True
                 self._inc(certs_generated=1)
@@ -293,9 +293,7 @@ class CampaignRunner:
                     f"Certificate failed: {exc}", participant=participant.name
                 )
                 self._inc(processed=1, failed=1)
-                self._write_csv(
-                    csv_path, participant, False, False, 0, error_message
-                )
+                self._write_csv(csv_path, participant, False, False, 0, error_message)
                 continue
 
             # -- Email ------------------------------------------------

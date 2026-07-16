@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import json
+import uuid
 from pathlib import Path
 from typing import Any, Dict
 
@@ -71,7 +72,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "brevo_api_key": "",
         "organization_name": "Our Team",
         "reply_to_email": "",
-        "email_subject": "\U0001F389 Your Certificate of Participation",
+        "email_subject": "\U0001f389 Your Certificate of Participation",
         "campaign_name": "",
     },
     # 3. Email template ---------------------------------------------------
@@ -88,21 +89,27 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "This is an automated message sent on {{Date}}."
         ),
     },
-    # 6. Certificate text placement & styling -----------------------------
-    "text_position": {
-        "x": 995,
-        "y": 680,
-        "font_size": 90,
-        "min_font_size": 40,
-        "font_size_step": 2,
-        "max_text_width": 1350,
-        "font_color": "#141414",
-        "font_family": "DejaVuSerif",
-        "bold": True,
-        "italic": False,
-        "alignment": "center",
-        "dpi": 300,
-    },
+    # 6. Certificate elements (multi-element support) --------------------
+    "certificate_elements": [
+        {
+            "id": "name_element",
+            "type": "text",
+            "label": "Participant Name",
+            "content_source": "{{Name}}",
+            "x": 995,
+            "y": 680,
+            "font_size": 90,
+            "min_font_size": 40,
+            "font_size_step": 2,
+            "max_text_width": 1350,
+            "font_color": "#141414",
+            "font_family": "DejaVuSerif",
+            "bold": True,
+            "italic": False,
+            "alignment": "center",
+        },
+    ],
+    "dpi": 300,
     # 7. Delay / retry behaviour ------------------------------------------
     "delay_settings": {
         "delay_between_emails": 2.0,
@@ -150,11 +157,7 @@ def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]
     """
     result = copy.deepcopy(base)
     for key, value in (override or {}).items():
-        if (
-            key in result
-            and isinstance(result[key], dict)
-            and isinstance(value, dict)
-        ):
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = deep_merge(result[key], value)
         else:
             result[key] = copy.deepcopy(value)
@@ -176,11 +179,45 @@ def migrate_config(saved: Dict[str, Any]) -> Dict[str, Any]:
         tmpl = saved["email_template"]
         if "greeting" in tmpl or "thank_you" in tmpl or "regards" in tmpl:
             parts = []
-            for sec in ["greeting", "body", "thank_you", "future_invitation", "regards", "signature", "footer"]:
+            for sec in [
+                "greeting",
+                "body",
+                "thank_you",
+                "future_invitation",
+                "regards",
+                "signature",
+                "footer",
+            ]:
                 if sec in tmpl and tmpl[sec].strip():
                     parts.append(tmpl[sec].strip())
             saved["email_template"] = {"body": "\n\n".join(parts)}
-            
+
+    # Migrate old text_position -> certificate_elements
+    if "text_position" in saved and "certificate_elements" not in saved:
+        old = saved["text_position"]
+        dpi = old.pop("dpi", 300)
+        saved["dpi"] = dpi
+        saved["certificate_elements"] = [
+            {
+                "id": "element_" + uuid.uuid4().hex[:8],
+                "type": "text",
+                "label": "Participant Name",
+                "content_source": "{{Name}}",
+                "x": old.get("x", 995),
+                "y": old.get("y", 680),
+                "font_size": old.get("font_size", 90),
+                "min_font_size": old.get("min_font_size", 40),
+                "font_size_step": old.get("font_size_step", 2),
+                "max_text_width": old.get("max_text_width", 1350),
+                "font_color": old.get("font_color", "#141414"),
+                "font_family": old.get("font_family", "DejaVuSerif"),
+                "bold": old.get("bold", True),
+                "italic": old.get("italic", False),
+                "alignment": old.get("alignment", "center"),
+            }
+        ]
+        del saved["text_position"]
+
     return saved
 
 

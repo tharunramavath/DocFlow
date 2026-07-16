@@ -14,8 +14,9 @@ position editor) and 14 (file management).
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 import streamlit as st
 
@@ -23,7 +24,11 @@ from core import theme
 from core.state import cfg, participants, persist_config, set_participants
 from services import excel_reader
 from services import asset_library
-from services.certificate_generator import list_font_families, render_preview_image
+from services.certificate_generator import (
+    build_certificate_context,
+    list_font_families,
+    render_preview_image,
+)
 from services.config_manager import (
     FONTS_DIR,
     TEMPLATES_DIR,
@@ -36,17 +41,23 @@ from services.image_converter import (
     convert_to_png,
     get_dimensions,
 )
+from services.placeholder_service import extract_placeholders
 
 
 # --------------------------------------------------------------------------
 # Cached preview so dragging sliders stays responsive
 # --------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
-def _cached_preview(template_path: str, mtime: float, position_json: str, name: str) -> bytes:
+def _cached_preview(
+    template_path: str, mtime: float, elements_json: str, context_json: str
+) -> bytes:
     import io
 
-    position = json.loads(position_json)
-    img = render_preview_image(name, Path(template_path), position, max_dimension=900)
+    elements = json.loads(elements_json)
+    context = json.loads(context_json)
+    img = render_preview_image(
+        Path(template_path), elements, context, max_dimension=900
+    )
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
@@ -103,21 +114,26 @@ def _participants_tab() -> None:
         preview_preset = st.radio(
             "Rows to preview",
             preset_opts,
-            index=preset_opts.index(default_preset) if default_preset in preset_opts else 1,
+            index=preset_opts.index(default_preset)
+            if default_preset in preset_opts
+            else 1,
             horizontal=True,
             key="preview_rows_preset",
         )
     with pc2:
         if preview_preset == "Custom":
             n_rows = st.number_input(
-                "Exact row count", min_value=1, max_value=max(total_rows, 1),
-                value=min(10, total_rows) or 1, key="preview_rows_custom",
+                "Exact row count",
+                min_value=1,
+                max_value=max(total_rows, 1),
+                value=min(10, total_rows) or 1,
+                key="preview_rows_custom",
             )
         else:
             n_rows = total_rows if preview_preset == "All" else int(preview_preset)
             st.caption(f"Showing {min(n_rows, total_rows)} of {total_rows} row(s)")
 
-    st.dataframe(df.head(int(n_rows)), width='stretch', hide_index=True)
+    st.dataframe(df.head(int(n_rows)), width="stretch", hide_index=True)
 
     columns = excel_reader.get_columns(df)
     mapping = cfg()["column_mapping"]
@@ -134,13 +150,19 @@ def _participants_tab() -> None:
             "Participant name column", columns, index=name_default
         )
     with c2:
-        email_guess = mapping["email_column"] if mapping["email_column"] in columns else (
-            next((c for c in columns if "mail" in c.lower()), columns[min(1, len(columns) - 1)])
+        email_guess = (
+            mapping["email_column"]
+            if mapping["email_column"] in columns
+            else (
+                next(
+                    (c for c in columns if "mail" in c.lower()),
+                    columns[min(1, len(columns) - 1)],
+                )
+            )
         )
         mapping["email_column"] = st.selectbox(
             "Email column", columns, index=columns.index(email_guess)
         )
-
 
     if st.button("Load participants", type="primary", key="load_participants"):
         try:
@@ -176,6 +198,278 @@ def _participants_tab() -> None:
 # --------------------------------------------------------------------------
 def _available_templates() -> List[Path]:
     return sorted(TEMPLATES_DIR.glob("*.png"))
+
+
+def _available_placeholders() -> List[str]:
+    """Return the list of all available placeholders for content_source."""
+    builtins = [
+        "{{Name}}",
+        "{{Email}}",
+        "{{Date}}",
+        "{{Organization}}",
+        "{{CertificateName}}",
+    ]
+    df = st.session_state.get("excel_df")
+    if df is not None:
+        cols = [f"{{{{{c.strip()}}}}}" for c in df.columns if c.strip()]
+        builtins.extend(c for c in cols if c not in builtins)
+    extra = cfg().get("column_mapping", {}).get("extra_fields", {})
+    for k in extra:
+        if k not in builtins:
+            builtins.append(k)
+    return builtins
+
+
+def _available_images() -> List[Path]:
+    """Return paths of images in uploads and media directories."""
+    paths = []
+    for d in [UPLOADS_DIR, resolve_path("assets/media/images")]:
+        if d and d.exists():
+            for ext in ("*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp"):
+                paths.extend(d.glob(ext))
+    return sorted(paths)
+
+
+def _build_sample_context() -> Dict[str, str]:
+    """Build a sample context dict for the live preview."""
+    people = participants()
+    if people:
+        return build_certificate_context(people[0], cfg())
+    email_settings = cfg().get("email_settings", {})
+    campaign = cfg().get("campaign_settings", {})
+    return {
+        "{{Name}}": "Alexandra Whitfield",
+        "{{Email}}": "alex@example.com",
+        "{{Date}}": "July 16, 2026",
+        "{{Organization}}": email_settings.get("organization_name", "Our Team"),
+        "{{CertificateName}}": campaign.get(
+            "certificate_name", "Certificate of Participation"
+        ),
+    }
+
+
+def _element_editor(elements: List[Dict], w: int, h: int) -> None:
+    """Render the dynamic element list editor."""
+    if not elements:
+        st.info("No elements yet. Add one below.")
+        return
+
+    delete_keys = []
+    move_up_keys = []
+    move_down_keys = []
+
+    for i, el in enumerate(elements):
+        el_id = el.get("id", f"el_{i}")
+        etype = el.get("type", "text")
+        label = el.get("label", f"Element {i + 1}")
+        type_icon = "📷" if etype == "image" else "Aa"
+        type_label = "Image" if etype == "image" else "Text"
+
+        cols = st.columns([0.5, 0.5, 3, 1.5, 0.5, 0.5])
+        with cols[0]:
+            if st.button("⬆", key=f"up_{el_id}", help="Move up"):
+                move_up_keys.append(i)
+        with cols[1]:
+            if st.button("⬇", key=f"down_{el_id}", help="Move down"):
+                move_down_keys.append(i)
+        with cols[2]:
+            st.markdown(f"**{label}**")
+        with cols[3]:
+            st.markdown(
+                f"<span style='font-size:12px'>{type_icon} {type_label}</span>",
+                unsafe_allow_html=True,
+            )
+        with cols[5]:
+            if st.button("🗑", key=f"del_{el_id}", help="Delete element"):
+                delete_keys.append(i)
+
+        with st.expander(f"Edit {label}", expanded=False):
+            el["label"] = st.text_input(
+                "Label", value=el.get("label", ""), key=f"label_{el_id}"
+            )
+
+            if etype == "text":
+                _text_element_fields(el, el_id, w, h)
+            else:
+                _image_element_fields(el, el_id, w, h)
+
+        st.divider()
+
+    # Apply moves and deletes (outside the loop to avoid index shifting)
+    if move_up_keys:
+        for idx in move_up_keys:
+            if idx > 0:
+                elements[idx], elements[idx - 1] = elements[idx - 1], elements[idx]
+        st.rerun()
+    if move_down_keys:
+        for idx in reversed(move_down_keys):
+            if idx < len(elements) - 1:
+                elements[idx], elements[idx + 1] = elements[idx + 1], elements[idx]
+        st.rerun()
+    if delete_keys:
+        for idx in reversed(sorted(delete_keys)):
+            elements.pop(idx)
+        st.rerun()
+
+
+def _text_element_fields(el: Dict, el_id: str, w: int, h: int) -> None:
+    """Render editor fields for a text element."""
+    placeholders = _available_placeholders()
+    current_src = el.get("content_source", "")
+    is_custom = current_src and current_src not in placeholders
+
+    src_opts = ["Custom text..."] + placeholders
+    src_idx = (
+        0
+        if is_custom
+        else (src_opts.index(current_src) if current_src in src_opts else 0)
+    )
+    chosen = st.selectbox("Content source", src_opts, index=src_idx, key=f"src_{el_id}")
+    if chosen == "Custom text...":
+        el["content_source"] = st.text_input(
+            "Custom text",
+            value=current_src if is_custom else "",
+            key=f"custom_src_{el_id}",
+            placeholder="Type your text here...",
+        )
+    else:
+        el["content_source"] = chosen
+
+    c1, c2 = st.columns(2)
+    with c1:
+        el["x"] = st.slider(
+            "X position", 0, w, min(int(el.get("x", w // 2)), w), key=f"x_{el_id}"
+        )
+    with c2:
+        el["y"] = st.slider(
+            "Y position", 0, h, min(int(el.get("y", h // 2)), h), key=f"y_{el_id}"
+        )
+
+    c3, c4 = st.columns(2)
+    with c3:
+        el["font_size"] = st.number_input(
+            "Font size", 10, 400, int(el.get("font_size", 90)), key=f"fs_{el_id}"
+        )
+        el["min_font_size"] = st.number_input(
+            "Min font size",
+            8,
+            400,
+            int(el.get("min_font_size", 40)),
+            key=f"mfs_{el_id}",
+        )
+    with c4:
+        el["max_text_width"] = st.number_input(
+            "Max text width (px)",
+            100,
+            w,
+            min(int(el.get("max_text_width", 1350)), w),
+            key=f"mtw_{el_id}",
+        )
+
+    families = list_font_families()
+    fam_idx = (
+        families.index(el.get("font_family", "DejaVuSerif"))
+        if el.get("font_family") in families
+        else 0
+    )
+    el["font_family"] = st.selectbox(
+        "Font family", families, index=fam_idx, key=f"ff_{el_id}"
+    )
+
+    c5, c6, c7 = st.columns(3)
+    with c5:
+        el["bold"] = st.checkbox(
+            "Bold", value=bool(el.get("bold", False)), key=f"bold_{el_id}"
+        )
+    with c6:
+        el["italic"] = st.checkbox(
+            "Italic", value=bool(el.get("italic", False)), key=f"italic_{el_id}"
+        )
+    with c7:
+        el["font_color"] = st.color_picker(
+            "Colour", value=el.get("font_color", "#141414"), key=f"color_{el_id}"
+        )
+
+    align_opts = ["left", "center", "right"]
+    el["alignment"] = st.radio(
+        "Alignment",
+        align_opts,
+        index=align_opts.index(el.get("alignment", "center")),
+        horizontal=True,
+        key=f"align_{el_id}",
+    )
+
+
+def _image_element_fields(el: Dict, el_id: str, w: int, h: int) -> None:
+    """Render editor fields for an image element."""
+    available = _available_images()
+    img_labels = [p.name for p in available]
+    current_src = el.get("content_source", "")
+
+    st.markdown("**Image source**")
+    up = st.file_uploader(
+        "Upload new image",
+        type=["png", "jpg", "jpeg", "gif", "webp"],
+        key=f"img_up_{el_id}",
+        label_visibility="collapsed",
+    )
+    if up is not None:
+        dest = UPLOADS_DIR / up.name
+        with open(dest, "wb") as f:
+            f.write(up.getvalue())
+        el["content_source"] = to_relative(dest)
+        st.success(f"Uploaded {up.name}")
+        st.rerun()
+
+    if img_labels:
+        idx = (
+            img_labels.index(Path(current_src).name)
+            if current_src and Path(current_src).name in img_labels
+            else 0
+        )
+        chosen_img = st.selectbox(
+            "Or select existing", img_labels, index=idx, key=f"img_sel_{el_id}"
+        )
+        if chosen_img:
+            matched = next((p for p in available if p.name == chosen_img), None)
+            if matched:
+                el["content_source"] = to_relative(matched)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        el["x"] = st.slider(
+            "X position", 0, w, min(int(el.get("x", 0)), w), key=f"ix_{el_id}"
+        )
+    with c2:
+        el["y"] = st.slider(
+            "Y position", 0, h, min(int(el.get("y", 0)), h), key=f"iy_{el_id}"
+        )
+
+    c3, c4 = st.columns(2)
+    with c3:
+        el["width"] = st.number_input(
+            "Width (px, optional)",
+            0,
+            w,
+            int(el.get("width", 0) or 0),
+            key=f"iw_{el_id}",
+        )
+        if el["width"] == 0:
+            el["width"] = None
+    with c4:
+        el["height"] = st.number_input(
+            "Height (px, optional)",
+            0,
+            h,
+            int(el.get("height", 0) or 0),
+            key=f"ih_{el_id}",
+        )
+        if el["height"] == 0:
+            el["height"] = None
+
+    el["opacity"] = st.slider(
+        "Opacity", 0.0, 1.0, float(el.get("opacity", 1.0)), key=f"iop_{el_id}"
+    )
 
 
 def _certificate_tab() -> None:
@@ -217,68 +511,88 @@ def _certificate_tab() -> None:
         w, h = 2000, 1414
 
     st.divider()
-    theme.section("Text position & style", "6", f"Template is {w}×{h}px")
+    theme.section("Certificate elements", "6", f"Template is {w}×{h}px")
 
-    pos = cfg()["text_position"]
-    sample_default = participants()[0].name if participants() else "Alexandra Whitfield"
-    sample = st.text_input("Preview name", value=sample_default, key="preview_name")
+    # Ensure certificate_elements exists in config
+    if "certificate_elements" not in cfg():
+        cfg()["certificate_elements"] = []
 
-    editor, preview = st.columns([1, 1.3], gap="large")
-    with editor:
-        pos["x"] = st.slider("X position", 0, w, min(int(pos.get("x", w // 2)), w))
-        pos["y"] = st.slider("Y position", 0, h, min(int(pos.get("y", h // 2)), h))
-        c1, c2 = st.columns(2)
-        with c1:
-            pos["font_size"] = st.number_input(
-                "Font size", 10, 400, int(pos.get("font_size", 90))
-            )
-            pos["min_font_size"] = st.number_input(
-                "Min font size", 8, 400, int(pos.get("min_font_size", 40))
-            )
-        with c2:
-            pos["max_text_width"] = st.number_input(
-                "Max text width (px)", 100, w, min(int(pos.get("max_text_width", 1350)), w)
-            )
-            pos["dpi"] = st.number_input("Export DPI", 72, 600, int(pos.get("dpi", 300)))
+    elements = cfg()["certificate_elements"]
 
-        families = list_font_families()
-        fam_idx = families.index(pos["font_family"]) if pos.get("font_family") in families else 0
-        pos["font_family"] = st.selectbox("Font family", families, index=fam_idx)
-
-        c3, c4, c5 = st.columns(3)
-        with c3:
-            pos["bold"] = st.checkbox("Bold", value=bool(pos.get("bold", False)))
-        with c4:
-            pos["italic"] = st.checkbox("Italic", value=bool(pos.get("italic", False)))
-        with c5:
-            pos["font_color"] = st.color_picker(
-                "Colour", value=pos.get("font_color", "#141414")
-            )
-
-        align_opts = ["left", "center", "right"]
-        pos["alignment"] = st.radio(
-            "Alignment",
-            align_opts,
-            index=align_opts.index(pos.get("alignment", "center")),
-            horizontal=True,
+    # Add element buttons
+    col_add, col_save, _ = st.columns([1, 1, 3])
+    with col_add:
+        add_type = st.selectbox(
+            "Add new",
+            ["", "Text element", "Image element"],
+            key="add_element_type",
+            label_visibility="collapsed",
         )
-
-        if st.button("Save text settings", type="primary", key="save_pos"):
+        if add_type == "Text element":
+            new_el = {
+                "id": "el_" + uuid.uuid4().hex[:8],
+                "type": "text",
+                "label": "New Text",
+                "content_source": "{{Name}}",
+                "x": w // 2,
+                "y": h // 2,
+                "font_size": 90,
+                "min_font_size": 40,
+                "font_size_step": 2,
+                "max_text_width": min(1350, w),
+                "font_color": "#141414",
+                "font_family": "DejaVuSerif",
+                "bold": False,
+                "italic": False,
+                "alignment": "center",
+            }
+            elements.append(new_el)
+            st.rerun()
+        elif add_type == "Image element":
+            new_el = {
+                "id": "el_" + uuid.uuid4().hex[:8],
+                "type": "image",
+                "label": "New Image",
+                "content_source": "",
+                "x": 0,
+                "y": 0,
+                "width": None,
+                "height": None,
+                "opacity": 1.0,
+            }
+            elements.append(new_el)
+            st.rerun()
+    with col_save:
+        if st.button("Save elements", type="primary", key="save_elements"):
             persist_config()
-            st.session_state.toast = ("Text settings saved.", "✅")
+            st.session_state.toast = ("Elements saved.", "✅")
 
-    with preview:
-        st.caption("Live preview")
-        try:
-            png = _cached_preview(
-                str(chosen_path),
-                chosen_path.stat().st_mtime,
-                json.dumps(pos, sort_keys=True),
-                sample or "Sample Name",
-            )
-            st.image(png, width='stretch')
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"Preview failed: {exc}")
+    # Element editor list
+    _element_editor(elements, w, h)
+
+    # DPI setting (document-level)
+    dpi_val = cfg().get("dpi", 300)
+    cfg()["dpi"] = st.number_input(
+        "Export DPI", 72, 600, int(dpi_val), key="dpi_setting"
+    )
+
+    # Preview
+    st.divider()
+    theme.section("Live preview", "", "All elements rendered together")
+    sample_context = _build_sample_context()
+    sample_name = sample_context.get("{{Name}}", "Sample")
+    st.caption(f"Preview context: **{sample_name}** — {len(elements)} element(s)")
+
+    try:
+        png = _cached_preview(
+            str(chosen_path),
+            chosen_path.stat().st_mtime,
+            json.dumps(elements, sort_keys=True),
+            json.dumps(sample_context, sort_keys=True),
+        )
+        st.image(png, width="stretch")
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Preview failed: {exc}")
 
 
 # --------------------------------------------------------------------------
@@ -290,9 +604,7 @@ def _files_tab() -> None:
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**Fonts**")
-        font_up = st.file_uploader(
-            "Add a .ttf font", type=["ttf"], key="font_uploader"
-        )
+        font_up = st.file_uploader("Add a .ttf font", type=["ttf"], key="font_uploader")
         if font_up is not None:
             _save_upload(font_up, FONTS_DIR)
             st.success(f"Added font {font_up.name}")
@@ -350,7 +662,8 @@ def _files_tab() -> None:
     st.caption(f"**{len(all_media)}** file(s) · {total_mb:.1f} MB total")
 
     categories = ["All"] + [
-        c for c in ("image", "video", "audio", "spreadsheet", "document", "other")
+        c
+        for c in ("image", "video", "audio", "spreadsheet", "document", "other")
         if any(a.category == c for a in all_media)
     ]
     labels = ["All"] + [
@@ -372,11 +685,14 @@ def _files_tab() -> None:
             with cols[3]:
                 with open(asset.path, "rb") as fh:
                     st.download_button(
-                        "Download", fh.read(), file_name=asset.name,
-                        key=f"dl_{asset.path}", width='stretch',
+                        "Download",
+                        fh.read(),
+                        file_name=asset.name,
+                        key=f"dl_{asset.path}",
+                        width="stretch",
                     )
             with cols[4]:
-                if st.button("Delete", key=f"del_{asset.path}", width='stretch'):
+                if st.button("Delete", key=f"del_{asset.path}", width="stretch"):
                     asset_library.delete_media(asset.path)
                     st.session_state.toast = (f"Deleted {asset.name}.", "🗑️")
                     st.rerun()
@@ -387,11 +703,19 @@ def _files_tab() -> None:
                 st.video(str(asset.path))
             elif asset.category == "audio":
                 st.audio(str(asset.path))
-            elif asset.category == "spreadsheet" and asset.path.suffix.lower() in (".csv", ".xlsx", ".xls", ".tsv"):
+            elif asset.category == "spreadsheet" and asset.path.suffix.lower() in (
+                ".csv",
+                ".xlsx",
+                ".xls",
+                ".tsv",
+            ):
                 try:
-                    df = excel_reader.load_dataframe(asset.path) if asset.path.suffix.lower() != ".csv" \
+                    df = (
+                        excel_reader.load_dataframe(asset.path)
+                        if asset.path.suffix.lower() != ".csv"
                         else __import__("pandas").read_csv(asset.path)
-                    st.dataframe(df.head(5), width='stretch')
+                    )
+                    st.dataframe(df.head(5), width="stretch")
                 except Exception:  # noqa: BLE001
                     pass
         st.divider()
@@ -405,7 +729,9 @@ def _files_tab() -> None:
 
 def render() -> None:
     theme.hero("Data & Template", "Bring in your people and design the certificate")
-    t1, t2, t3 = st.tabs(["👥 Participants", "🖼️ Certificate & Text", "📁 Files & Media"])
+    t1, t2, t3 = st.tabs(
+        ["👥 Participants", "🖼️ Certificate & Text", "📁 Files & Media"]
+    )
     with t1:
         _participants_tab()
     with t2:
