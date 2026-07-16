@@ -559,35 +559,6 @@ def _certificate_tab() -> None:
                 }
             )
             st.rerun()
-        elif add_type == "Image element":
-            new_el = {
-                "id": "el_" + uuid.uuid4().hex[:8],
-                "type": "image",
-                "label": "New Image",
-                "content_source": "",
-                "x": 0,
-                "y": 0,
-                "width": None,
-                "height": None,
-                "opacity": 1.0,
-            }
-            elements.append(new_el)
-            st.session_state.add_element_type = ""
-            st.rerun()
-        elif add_type == "Image element":
-            new_el = {
-                "id": "el_" + uuid.uuid4().hex[:8],
-                "type": "image",
-                "label": "New Image",
-                "content_source": "",
-                "x": 0,
-                "y": 0,
-                "width": None,
-                "height": None,
-                "opacity": 1.0,
-            }
-            elements.append(new_el)
-            st.rerun()
     with col_save:
         if st.button("Save elements", type="primary", key="save_elements"):
             persist_config()
