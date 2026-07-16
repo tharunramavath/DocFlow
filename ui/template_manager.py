@@ -170,8 +170,8 @@ def _participants_tab() -> None:
     with c3:
         cert_id_options = [""] + columns
         cert_id_default = (
-            columns.index(mapping["certificate_id_column"])
-            if mapping.get("certificate_id_column") in columns
+            cert_id_options.index(mapping["certificate_id_column"])
+            if mapping.get("certificate_id_column") in cert_id_options
             else 0
         )
         mapping["certificate_id_column"] = st.selectbox(
