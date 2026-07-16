@@ -25,12 +25,11 @@ def _apply_secrets(config: Dict) -> Dict:
     """
     try:
         secrets = st.secrets
+        api_key = secrets.get("BREVO_API_KEY") or secrets.get("brevo_api_key")
+        if api_key:
+            config.setdefault("email_settings", {})["brevo_api_key"] = api_key
     except Exception:
-        return config
-
-    api_key = secrets.get("BREVO_API_KEY") or secrets.get("brevo_api_key")
-    if api_key:
-        config.setdefault("email_settings", {})["brevo_api_key"] = api_key
+        pass
     return config
 
 
