@@ -300,15 +300,18 @@ def _element_editor(elements: List[Dict], w: int, h: int) -> None:
         for idx in move_up_keys:
             if idx > 0:
                 elements[idx], elements[idx - 1] = elements[idx - 1], elements[idx]
+        cfg()["certificate_elements"] = elements
         st.rerun()
     if move_down_keys:
         for idx in reversed(move_down_keys):
             if idx < len(elements) - 1:
                 elements[idx], elements[idx + 1] = elements[idx + 1], elements[idx]
+        cfg()["certificate_elements"] = elements
         st.rerun()
     if delete_keys:
         for idx in reversed(sorted(delete_keys)):
             elements.pop(idx)
+        cfg()["certificate_elements"] = elements
         st.rerun()
 
 
@@ -543,6 +546,7 @@ def _certificate_tab() -> None:
                     "alignment": "center",
                 }
             )
+            cfg()["certificate_elements"] = elements
             st.rerun()
         if st.button("+ Image", key="add_image_btn", use_container_width=True):
             elements.append(
@@ -558,6 +562,7 @@ def _certificate_tab() -> None:
                     "opacity": 1.0,
                 }
             )
+            cfg()["certificate_elements"] = elements
             st.rerun()
     with col_save:
         if st.button("Save elements", type="primary", key="save_elements"):
